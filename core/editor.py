@@ -12,7 +12,9 @@ try:
         import pyannote.audio.core.task
         torch.serialization.add_safe_globals([
             torch.torch_version.TorchVersion,
-            pyannote.audio.core.task.Specifications
+            pyannote.audio.core.task.Specifications,
+            pyannote.audio.core.task.Problem,
+            pyannote.audio.core.task.Resolution,
         ])
 except Exception as e:
     pass
@@ -58,7 +60,7 @@ def find_face_x_center(frame):
         with mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5) as face_detection:
             results = face_detection.process(frame)
             if not results.detections:
-                return 0.5 # Default tengah (center)
+                return None # Jangan kembalikan 0.5, biarkan fungsi pemanggil memakai fallback terakhirnya
             
             # Ambil wajah yang paling yakin / besar
             detection = results.detections[0]
@@ -67,8 +69,8 @@ def find_face_x_center(frame):
             # Bounding box bisa diluar batas karena blur
             return max(0.0, min(1.0, x_center))
     except Exception as e:
-        # Bypass darurat jika instalasi mediapipe di Python 3.12 bermasalah (Missing Attribute)
-        return 0.5
+        # Bypass darurat jika instalasi mediapipe bermasalah
+        return None
 
 def crop_and_concat(input_path, output_path, timeline_crop_data, vid_width, vid_height):
     """
@@ -101,19 +103,19 @@ def crop_and_concat(input_path, output_path, timeline_crop_data, vid_width, vid_
         crop_x = max(0, min(crop_x, vid_width - target_w))
         crop_y = 0
         
-        duration = seg['end'] - seg['start']
+        duration = max(0.1, seg['end'] - seg['start'])
         
         # FFMPEG NVENC HARDWARE-ACCELERATED CROP
         try:
             input_stream = ffmpeg.input(input_path, ss=seg['start'], t=duration)
             
-            # Map video (di-filter) dan audio (asli) secara eksplisit
-            video = input_stream.video.filter('crop', target_w, target_h, crop_x, crop_y)
-            audio = input_stream.audio
+            # Map video (di-filter) dan audio (asli) secara eksplisit dengan perataan timestamp (PTS=0)
+            video = input_stream.video.filter('setpts', 'PTS-STARTPTS').filter('crop', target_w, target_h, crop_x, crop_y)
+            audio = input_stream.audio.filter('asetpts', 'PTS-STARTPTS')
             
             (
                 ffmpeg
-                .output(video, audio, part_name, vcodec='h264_nvenc', preset='fast', acodec='copy')
+                .output(video, audio, part_name, vcodec='h264_nvenc', preset='fast', acodec='aac', audio_bitrate='128k')
                 .overwrite_output()
                 .run(quiet=True)
             )
@@ -201,27 +203,42 @@ def edit_video(input_path: str, mode: str):
         timeline_crop_data = []
         last_end = 0.0
         
-        print("   -> 3. Melacak posisi wajah per-transisi Speaker menggunakan Face Detection...")
+        # State tracker cerdas untuk Face Detection
+        last_x_pos = 0.5
+        speaker_x_memory = {}
+        
+        print("   -> 3. Melacak posisi wajah per-transisi Speaker (3-Point Sampling & Memory)...")
         # Iterasi dari hasil Diarization: (Turn, _, Speaker)
         for turn, _, speaker in diarization.itertracks(yield_label=True):
             start = turn.start
             end = turn.end
             
-            # Jika ada jeda tanpa percakapan, isi gap menggunakan wajah frame sebelumnya 
-            # Tapi mari kita biarkan saja timeline ini utuh secara durasi dari 0 - max_duration
-            # Disini kita pastikan gap ditambal atau diselaraskan
-            
-            # Cari wajah pada pertengahan segmen percakapan ini
-            sample_time = start + ((end - start) / 2)
-            frame = extract_frame_at_time(input_path, sample_time)
-            
-            x_pos = 0.5
-            if frame is not None:
-                x_pos = find_face_x_center(frame)
-                
-            # Kita rapikan segment agar seamless
+            # Tes 3 titik waktu (Tengah, Awal 30%, Akhir 70%) untuk menghindari Motion Blur
+            x_pos = None
+            for pct in [0.5, 0.3, 0.7]:
+                sample_time = start + ((end - start) * pct)
+                frame = extract_frame_at_time(input_path, sample_time)
+                if frame is not None:
+                    detected_x = find_face_x_center(frame)
+                    if detected_x is not None:
+                        x_pos = detected_x
+                        break
+                        
+            # Caching System: Jangan langsung lompat ke tengah (0.5) jika wajah hilang
+            if x_pos is not None:
+                last_x_pos = x_pos
+                speaker_x_memory[speaker] = x_pos
+            else:
+                if speaker in speaker_x_memory:
+                    x_pos = speaker_x_memory[speaker]
+                else:
+                    x_pos = last_x_pos
+                    
+            # Kita rapikan segment agar seamless dan membatasi overlap ekstrem
             if len(timeline_crop_data) > 0:
-                timeline_crop_data[-1]['end'] = start
+                if start <= timeline_crop_data[-1]['start']:
+                    start = timeline_crop_data[-1]['end'] + 0.1
+                timeline_crop_data[-1]['end'] = max(timeline_crop_data[-1]['start'] + 0.1, start)
                 
             timeline_crop_data.append({
                 'start': start,
