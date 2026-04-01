@@ -74,79 +74,58 @@ def find_face_x_center(frame):
 
 def crop_and_concat(input_path, output_path, timeline_crop_data, vid_width, vid_height):
     """
-    Menggunakan FFmpeg-python untuk memotong (split), crop (NVENC), dan menggabungkannya kembali (concat)
-    Berdasarkan time-stamps dan x_center.
-    timeline_crop_data: list of dict {'start': float, 'end': float, 'x': float}
+    Menggunakan FFmpeg-python Filtergraph untuk Split + Crop + Concat secara Mulus dalam Sekali Jalan.
+    Bebas dari Bug Audio Demuxer FFmpeg dan Mendukung Otomasi Hook di awal.
     """
-    print(f"   -> [Editor] Memotong {len(timeline_crop_data)} segmen dan me-render NVENC...")
+    print(f"   -> [Editor] Filtergraph memproses {len(timeline_crop_data)} segmen asli...")
     
-    # Resolusi target 9:16 (tinggi aslinya dipertahankan, lebar dipotong)
+    # Resolusi target 9:16
     target_h = vid_height
     target_w = int(vid_height * 9 / 16)
-    
-    # Pastikan target_w bernilai genap untuk FFmpeg H264
     if target_w % 2 != 0: target_w += 1
     
-    temp_files = []
+    # --- SISTEM HOOK (Cuplikan Puncak) ---
+    if len(timeline_crop_data) > 0:
+        longest_seg = max(timeline_crop_data, key=lambda s: s['end'] - s['start'])
+        hook_seg = {
+            'start': longest_seg['start'],
+            'end': min(longest_seg['end'], longest_seg['start'] + 4.0), # 4 detik
+            'x': longest_seg['x'],
+            'speaker': longest_seg['speaker']
+        }
+        # Rakit Timeline dengan Hook di depan
+        final_timeline = [hook_seg] + timeline_crop_data
+        print(f"   🔥 Hook (4 Detik) Ditambahkan Dari Menit {int(hook_seg['start']//60)}:{int(hook_seg['start']%60):02d}!")
+    else:
+        final_timeline = timeline_crop_data
+        
+    streams = []
     
-    for idx, seg in enumerate(timeline_crop_data):
-        part_name = os.path.join(TEMP_DIR, f"temp_crop_{idx}.mp4")
-        temp_files.append(part_name)
-        
-        # Hitung koordinat crop X di pixel (dari persentase)
+    for idx, seg in enumerate(final_timeline):
         pixel_x_center = seg['x'] * vid_width
-        
-        # Koordinat pojok kiri atas crop
         crop_x = int(pixel_x_center - (target_w / 2))
-        
-        # Pastikan tidak meluber keluar layar
         crop_x = max(0, min(crop_x, vid_width - target_w))
         crop_y = 0
         
         duration = max(0.1, seg['end'] - seg['start'])
         
-        # FFMPEG NVENC HARDWARE-ACCELERATED CROP
-        try:
-            input_stream = ffmpeg.input(input_path, ss=seg['start'], t=duration)
-            
-            # Map video (di-filter) dan audio (asli) secara eksplisit dengan perataan timestamp (PTS=0)
-            video = input_stream.video.filter('setpts', 'PTS-STARTPTS').filter('crop', target_w, target_h, crop_x, crop_y)
-            audio = input_stream.audio.filter('asetpts', 'PTS-STARTPTS')
-            
-            (
-                ffmpeg
-                .output(video, audio, part_name, vcodec='h264_nvenc', preset='fast', acodec='aac', audio_bitrate='128k')
-                .overwrite_output()
-                .run(quiet=True)
-            )
-        except ffmpeg.Error as e:
-            print(f"   ❌ FFMPEG Error pada segmen {idx}:", e.stderr.decode('utf8'))
-    
-    print("   -> [Editor] Menyatukan semua segmen...")
-    # Menulis concat file list (demuxer list FFmpeg)
-    concat_file_path = os.path.join(TEMP_DIR, "concat_list.txt")
-    with open(concat_file_path, "w") as f:
-        for p_file in temp_files:
-            # path harus pakai absolute dan escaped jika pake backslash, tapi ini Linux
-            f.write(f"file '{p_file}'\n")
-            
-    # Concat tanpa re-encoding (stream copy)
-    try:
-        (
-            ffmpeg
-            .input(concat_file_path, format='concat', safe=0)
-            .output(output_path, c='copy')
-            .overwrite_output()
-            .run(quiet=True)
-        )
-    except ffmpeg.Error as e:
-        print("   ❌ FFMPEG Concat Error:", e.stderr.decode('utf8'))
+        inp = ffmpeg.input(input_path, ss=seg['start'], t=duration)
+        v = inp.video.filter('setpts', 'PTS-STARTPTS').filter('crop', target_w, target_h, crop_x, crop_y)
+        a = inp.audio.filter('asetpts', 'PTS-STARTPTS')
         
-    # Pembersihan file temp
-    os.remove(concat_file_path)
-    for p_file in temp_files:
-        if os.path.exists(p_file):
-            os.remove(p_file)
+        streams.extend([v, a])
+        
+    if not streams:
+        print("   ❌ Kosong: Tidak ada segmen yang valid!")
+        return
+        
+    print("   -> [Editor] Menyatukan seluruh segmen tanpa henti (Single-Pass Encoding)...")
+    try:
+        joined = ffmpeg.concat(*streams, v=1, a=1)
+        out = ffmpeg.output(joined, output_path, vcodec='h264_nvenc', preset='fast', acodec='aac', audio_bitrate='128k')
+        out.overwrite_output().run(quiet=True)
+    except ffmpeg.Error as e:
+        print("   ❌ FFMPEG Filtergraph Error:", e.stderr.decode('utf8'))
 
 def edit_video(input_path: str, mode: str):
     """
@@ -213,9 +192,9 @@ def edit_video(input_path: str, mode: str):
             start = turn.start
             end = turn.end
             
-            # Tes 3 titik waktu (Tengah, Awal 30%, Akhir 70%) untuk menghindari Motion Blur
+            # Tes Sapuan 10-Point Waktu untuk mencegah Meleset
             x_pos = None
-            for pct in [0.5, 0.3, 0.7]:
+            for pct in [0.5, 0.3, 0.7, 0.2, 0.8, 0.4, 0.6, 0.1, 0.9]:
                 sample_time = start + ((end - start) * pct)
                 frame = extract_frame_at_time(input_path, sample_time)
                 if frame is not None:
