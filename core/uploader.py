@@ -79,31 +79,39 @@ def generate_youtube_title(transcript: str) -> str:
         return default_title
         
     print("   -> 🧠 Membaca Transkrip & Menciptakan Judul Viral AI...")
-    # Menggunakan model Phi-3 yang saat ini tersedia secara gratis 24/7 di HuggingFace
-    API_URL = "https://api-inference.huggingface.co/models/microsoft/Phi-3-mini-4k-instruct"
+    # API baru Hugging Face menggunakan standar OpenAI-Compatible (aktif gratis untuk akun basic)
+    API_URL = "https://router.huggingface.co/hf-inference/v1/chat/completions"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
     
     # Memotong transcript jika terlalu panjang
     safe_transcript = " ".join(transcript.split()[:400])
     
-    # Phi-3 menggunakan gaya prompt chat (user/assistant)
-    prompt = f"<|user|>\nBuatkan HANYA 1 baris Judul YouTube Shorts clickbait (maksimal 60 karakter, 2 emoji, bahasa Indonesia) berdasarkan cerita video ini:\n\"{safe_transcript}\"<|end|>\n<|assistant|>\n"
-    
     payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": 30,
-            "temperature": 0.8,
-            "return_full_text": False
-        }
+        "model": "microsoft/Phi-3-mini-4k-instruct",
+        "messages": [
+            {
+                "role": "system",
+                "content": "Kamu adalah asisten pintar untuk Content Creator."
+            },
+            {
+                "role": "user",
+                "content": f"Buatkan HANYA 1 baris Judul YouTube Shorts clickbait (maksimal 60 karakter, 2 emoji, bahasa Indonesia) berdasarkan cerita video ini:\n\"{safe_transcript}\""
+            }
+        ],
+        "max_tokens": 30,
+        "temperature": 0.8
     }
     
     try:
-        # Tingkatkan timeout karena model mungkin sedang "bangun tidur" (Cold Start)
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=40)
-        response.raise_for_status()
+        # Panggil API dengan timeout lebih lama untuk mengantisipasi wake-up time
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+        
+        # Jika gagal atau limit HF api tercapai, abaikan pelan-pelan
+        if response.status_code != 200:
+            return default_title
+            
         data = response.json()
-        raw_title = data[0]['generated_text'].strip()
+        raw_title = data['choices'][0]['message']['content'].strip()
         
         # Bersihkan format nakal dari AI
         clean_title = raw_title.replace('"', '').replace("'", "").split("\n")[0].strip()
