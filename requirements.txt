@@ -1,0 +1,34 @@
+# PyTorch & TorchAudio dengan dukungan CUDA 11.8 (Kompatibel dengan CUDA Driver 12.0)
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch>=2.0.0
+torchaudio>=2.0.0
+torchvision>=0.15.0
+
+# Membuka batas versi agar kompatibel dengan Python 3.12
+moviepy
+ffmpeg-python==0.2.0
+pydub==0.25.1
+pysubs2==1.6.1
+
+# AI Inference (Whisper, Diarization, Face Tracking)
+openai-whisper
+pyannote.audio==3.1.1
+numpy<2.0.0
+huggingface_hub<0.22.0
+mediapipe
+insightface
+
+# Akselerasi Hardware GPU (Membantu MediaPipe/InsightFace)
+onnxruntime-gpu
+
+# YouTube Scraping & Downloader
+yt-dlp
+
+# YouTube API for Uploading & Scheduling
+google-api-python-client==2.115.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
+
+# CLI Utilities & Env
+click==8.1.7
+python-dotenv==1.0.0
