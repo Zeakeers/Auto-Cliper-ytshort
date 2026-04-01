@@ -1,4 +1,4 @@
-# Auto-Clipper AI (Linux Mint / RTX 4060 Optimized)
+# Auto-Clipper AI
 
 Scraper dan Editor Video Otomatis untuk platform Shorts, didukung akselerasi GPU lokal (CUDA) secara penuh. Dirancang untuk efisiensi di NVIDIA RTX 4060.
 
@@ -54,7 +54,7 @@ pip install -r requirements.txt
 ```
 
 ### 4. Cek Kelancaran Hardware
-Pastikan library berhasil di-bind ke GPU RTX 4060 Anda:
+Pastikan library berhasil di-bind ke GPU Anda:
 ```bash
 python utils/gpu_check.py
 ```
